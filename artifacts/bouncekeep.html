@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Bouncekeep</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; min-height: 100dvh; background: #d7eef8; font-family: "Trebuchet MS", sans-serif; color: #1b2430; }
+  .app { max-width: 520px; margin: 0 auto; padding: 10px; }
+  header { display: flex; justify-content: space-between; align-items: end; }
+  h1 { margin: 0; font-size: 18px; letter-spacing: .4px; }
+  .pills { display: flex; gap: 6px; font-size: 13px; font-weight: 800; }
+  canvas { width: 100%; height: auto; image-rendering: pixelated; display: block; margin-top: 8px; background: #b9e2f5; border: 4px solid #8d4a3a; }
+  .meta { display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; margin-top: 6px; }
+  .pad { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; }
+  button { border: 3px solid #6b342c; background: #e7eef6; border-radius: 8px; padding: 14px 8px; font-weight: 800; font-size: 16px; }
+  button.buy { background: #f5c451; }
+  .shop { display: grid; gap: 8px; margin-top: 10px; }
+  .offer { display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,.45); border: 2px solid #8d4a3a; border-radius: 8px; padding: 8px; }
+  .offer b { display: block; } .offer small { color: #5c6b7a; }
+  .note { font-size: 12px; color: #3d5163; }
+  .modal { position: fixed; inset: 0; background: rgba(8,16,28,.55); display: none; place-items: center; padding: 16px; }
+  .modal.show { display: grid; }
+  .card { width: min(360px, 100%); background: #f4fbff; border: 4px solid #8d4a3a; border-radius: 10px; padding: 14px; }
+  .row { display: flex; gap: 8px; } .row button { flex: 1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>BOUNCEKEEP</h1>
+    <div class="pills"><span id="lives">❤ 3</span><span id="coins">🪙 40</span><span id="streak">🔥 1</span></div>
+  </header>
+  <canvas id="cv" width="320" height="200"></canvas>
+  <div class="meta"><span id="level">1 · Yard</span><span id="rings">Hoops 0/2</span><span id="size">Small</span></div>
+  <div class="pad">
+    <button id="left">◀ 4</button>
+    <button id="jump">▲ 2</button>
+    <button id="right">6 ▶</button>
+  </div>
+  <div class="shop">
+    <div class="offer"><div><b>Life token</b><small>One extra ball, max 5</small></div><button class="buy" data-pack="life">$0.99</button></div>
+    <div class="offer"><div><b>Checkpoint</b><small>Mark the diamond</small></div><button class="buy" data-pack="check">$1.99</button></div>
+    <div class="offer"><div><b>Bounce pass</b><small>Streak shield + free life</small></div><button class="buy" data-pack="pass">$4.99</button></div>
+  </div>
+  <p class="note">Same yard as the picture. 4 and 6 roll, 2 jumps. Green pad grows the ball, red spikes shrink it. Big ball floats. Door opens after both hoops.</p>
+</div>
+<div class="modal" id="modal"><div class="card"><h2 id="mTitle"></h2><p id="mBody"></p><div class="row"><button id="mS">Later</button><button class="buy" id="mP">OK</button></div></div></div>
+<script>
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+const W = 320, H = 200, T = 8;
+const state = Object.assign({ coins:40, lives:3, course:1, streak:1, last:"", pass:false, freeLife:1 }, JSON.parse(localStorage.getItem("bouncekeep")||"{}"));
+const names = ["Yard", "Grow", "Water", "Spikes"];
+let ball, solids, hoops, water, grow, shrinks, door, check, got, need, grounded, over;
+function save(){ localStorage.setItem("bouncekeep", JSON.stringify(state)); paint(); }
+function today(){ return new Date().toISOString().slice(0,10); }
+function paint(){
+  document.getElementById("lives").textContent = "❤ " + state.lives;
+  document.getElementById("coins").textContent = "🪙 " + state.coins;
+  document.getElementById("streak").textContent = "🔥 " + state.streak;
+  document.getElementById("level").textContent = state.course + " · " + names[state.course-1];
+  document.getElementById("rings").textContent = "Hoops " + got + "/" + need;
+  document.getElementById("size").textContent = ball && ball.big ? "Big" : "Small";
+}
+function brick(x,y,w,h){ return {x,y,w,h}; }
+function course(){
+  got = 0; over = false; grounded = false;
+  ball = { x: 28, y: 36, vx: 0, vy: 0, r: 6, big: false };
+  check = { x: 132, y: 128, on: false };
+  grow = { x: 104, y: 156 };
+  water = { x: 112, y: 156, w: 96, h: 20 };
+  shrinks = [{x:232,y:148},{x:246,y:148},{x:260,y:148},{x:274,y:148}];
+  hoops = [{x:168,y:62,got:false},{x:236,y:28,got:false}];
+  door = { x: 276, y: 20, w: 18, h: 28, open: false };
+  if (state.course === 1) {
+    solids = [
+      brick(8,48,32,128), brick(40,80,72,16), brick(8,160,64,16),
+      brick(144,72,64,16), brick(168,88,80,16), brick(208,40,96,16), brick(288,40,16,136),
+      brick(208,152,80,16)
+    ];
+  } else if (state.course === 2) {
+    solids = [brick(8,160,300,16), brick(8,112,70,16), brick(180,112,80,16), brick(90,64,80,16)];
+    ball.x = 24; ball.y = 140; grow = {x:40,y:148}; shrinks = [{x:120,y:52}];
+    hoops = [{x:40,y:96,got:false},{x:210,y:96,got:false}];
+    door = {x:250,y:36,w:18,h:28,open:false}; water = null;
+  } else if (state.course === 3) {
+    solids = [brick(8,160,48,16), brick(250,160,62,16), brick(120,112,70,16), brick(16,64,70,16), brick(230,48,74,16)];
+    ball.x = 28; ball.y = 140; water = {x:56,y:148,w:194,h:28}; grow = {x:24,y:148};
+    hoops = [{x:150,y:96,got:false},{x:46,y:48,got:false}];
+    door = {x:270,y:20,w:18,h:28,open:false};
+  } else {
+    solids = [brick(8,160,300,16), brick(8,112,50,16), brick(120,88,50,16), brick(210,56,70,16)];
+    ball.x = 24; ball.y = 140; water = null; grow = {x:300,y:148};
+    shrinks = [{x:150,y:148},{x:166,y:148}];
+    hoops = [{x:30,y:96,got:false},{x:140,y:72,got:false}];
+    door = {x:246,y:28,w:18,h:28,open:false};
+  }
+  need = hoops.length; paint();
+}
+function touchStreak(){
+  const t = today(); if (state.last === t) return;
+  const y = new Date(Date.now()-86400000).toISOString().slice(0,10);
+  state.streak = (state.last === y || state.pass) ? state.streak + 1 : 1;
+  state.last = t; state.coins += 8 + state.streak * 2;
+}
+const hold = {l:false,r:false};
+function bind(id, key){
+  const el = document.getElementById(id);
+  el.addEventListener("pointerdown", e => { e.preventDefault(); hold[key] = true; if (key==="j") jump(); });
+  el.addEventListener("pointerup", () => hold[key] = false);
+  el.addEventListener("pointerleave", () => hold[key] = false);
+}
+bind("left","l"); bind("right","r"); bind("jump","j");
+addEventListener("keydown", e => { if(e.key==="ArrowLeft"||e.key==="4") hold.l=true; if(e.key==="ArrowRight"||e.key==="6") hold.r=true; if(e.key==="ArrowUp"||e.key==="2") jump(); });
+addEventListener("keyup", e => { if(e.key==="ArrowLeft"||e.key==="4") hold.l=false; if(e.key==="ArrowRight"||e.key==="6") hold.r=false; });
+function jump(){ if(!over && grounded){ const run=Math.min(1,Math.abs(ball.vx)/70); ball.vy=(ball.big?-132:-118)-run*16; grounded=false; } }
+function setBig(v){ ball.big=v; ball.r=v?9:6; }
+function burst(){ state.lives--; save(); if(state.lives<=0){ openModal("No balls left","A life token puts you back.","Buy a life",()=>{state.lives=1;save();closeModal();respawn();},"Restart",()=>{state.lives=3;save();closeModal();course();}); return;} respawn(); }
+function respawn(){ ball.x = check.on ? check.x : 28; ball.y = check.on ? check.y-16 : 36; ball.vx=0; ball.vy=0; setBig(false); }
+function openModal(t,b,p,op,s,os){ document.getElementById("mTitle").textContent=t; document.getElementById("mBody").textContent=b; const P=document.getElementById("mP"), S=document.getElementById("mS"); P.textContent=p; S.textContent=s; P.onclick=op; S.onclick=os; document.getElementById("modal").classList.add("show"); over=true; }
+function closeModal(){ document.getElementById("modal").classList.remove("show"); over=false; }
+function win(){ over=true; touchStreak(); state.coins+=16+got*4; const done=state.course>=4; if(!done) state.course++; save(); openModal(done?"Yard clear":"Door open", done?"Replay from the picture course.":"Next course keeps this art.", done?"Replay":"Next", ()=>{ if(done) state.course=1; save(); closeModal(); course(); }, "Shop", closeModal); }
+document.querySelectorAll("[data-pack]").forEach(b=>b.onclick=()=>{ if(b.dataset.pack==="life") state.lives=Math.min(5,state.lives+1); if(b.dataset.pack==="check") check.on=true; if(b.dataset.pack==="pass"){state.pass=true;state.coins+=60;} save(); openModal("Added","Demo only.","OK",closeModal,"Close",closeModal); });
+function bricks(r){
+  ctx.fillStyle="#c4473a"; ctx.fillRect(r.x,r.y,r.w,r.h);
+  ctx.strokeStyle="#8d342c"; ctx.lineWidth=1;
+  for(let y=r.y;y<r.y+r.h;y+=4) ctx.strokeRect(r.x,y,r.w,4);
+  ctx.strokeStyle="#e07a62"; ctx.strokeRect(r.x+0.5,r.y+0.5,r.w-1,1);
+}
+function step(dt){
+  if(hold.l) ball.vx -= (ball.big?180:240)*dt;
+  if(hold.r) ball.vx += (ball.big?180:240)*dt;
+  if(!hold.l && !hold.r) ball.vx *= Math.pow(0.08,dt);
+  ball.vx = Math.max(-78, Math.min(78, ball.vx));
+  const wet = water && ball.x>water.x && ball.x<water.x+water.w && ball.y>water.y;
+  ball.vy += (wet ? (ball.big?-220:160) : 280) * dt;
+  ball.x += ball.vx*dt; ball.y += ball.vy*dt;
+  if(ball.x<ball.r){ball.x=ball.r;ball.vx=0;} if(ball.x>W-ball.r){ball.x=W-ball.r;ball.vx=0;}
+  grounded=false;
+  solids.forEach(p=>{
+    if(ball.vy>=0 && ball.x>p.x-2 && ball.x<p.x+p.w+2 && ball.y+ball.r>p.y && ball.y+ball.r<p.y+10){ ball.y=p.y-ball.r; ball.vy=0; grounded=true; }
+  });
+  if(grow && Math.hypot(ball.x-grow.x, ball.y-grow.y)<12) setBig(true);
+  shrinks.forEach(s=>{ if(Math.hypot(ball.x-s.x, ball.y-s.y)<10) setBig(false); });
+  if(!check.on && Math.hypot(ball.x-check.x, ball.y-check.y)<10){ check.on=true; state.coins+=4; save(); }
+  hoops.forEach(h=>{ if(!h.got && Math.abs(ball.x-h.x)<12 && Math.abs(ball.y-h.y)<12){ if(ball.big && h.x<80 && state.course===2) return; h.got=true; got++; state.coins+=3; save(); } });
+  door.open = got>=need;
+  if(door.open && ball.x>door.x && ball.x<door.x+door.w && ball.y>door.y && ball.y<door.y+door.h) win();
+  if(ball.y>H+20) burst();
+  paint();
+}
+function draw(){
+  ctx.fillStyle="#b9e2f5"; ctx.fillRect(0,0,W,H);
+  if(water){ ctx.fillStyle="#3aa0e0"; ctx.fillRect(water.x,water.y,water.w,water.h); ctx.fillStyle="#7ec8f0"; ctx.fillRect(water.x,water.y,water.w,3); }
+  solids.forEach(bricks);
+  ctx.strokeStyle="#f5c451"; ctx.lineWidth=2;
+  hoops.forEach(h=>{ if(h.got) return; ctx.beginPath(); ctx.ellipse(h.x,h.y,7,9,0,0,7); ctx.stroke(); });
+  if(grow){ ctx.fillStyle="#37b24d"; ctx.beginPath(); ctx.moveTo(grow.x,grow.y-8); ctx.lineTo(grow.x+7,grow.y+4); ctx.lineTo(grow.x-7,grow.y+4); ctx.fill(); }
+  ctx.fillStyle="#e03131";
+  shrinks.forEach(s=>{ ctx.beginPath(); ctx.moveTo(s.x-4,s.y+4); ctx.lineTo(s.x,s.y-5); ctx.lineTo(s.x+4,s.y+4); ctx.fill(); });
+  ctx.fillStyle=check.on?"#e03131":"#f5c451";
+  ctx.beginPath(); ctx.moveTo(check.x,check.y-6); ctx.lineTo(check.x+5,check.y); ctx.lineTo(check.x,check.y+6); ctx.lineTo(check.x-5,check.y); ctx.fill();
+  ctx.fillStyle=door.open?"#adb5bd":"#868e96"; ctx.fillRect(door.x,door.y,door.w,door.h);
+  ctx.fillStyle="#343a40"; ctx.fillRect(door.x+7,door.y+10,4,6);
+  ctx.fillStyle=ball.big?"#4dabf7":"#ff3b30"; ctx.beginPath(); ctx.arc(ball.x,ball.y,ball.r,0,7); ctx.fill();
+  ctx.fillStyle="rgba(255,255,255,.7)"; ctx.fillRect(ball.x-2,ball.y-3,2,2);
+  for(let i=0;i<state.lives;i++){ ctx.fillStyle="#ff3b30"; ctx.beginPath(); ctx.arc(12+i*12, H-8, 4, 0, 7); ctx.fill(); }
+}
+let last=performance.now();
+function frame(now){ const dt=Math.min(0.033,(now-last)/1000); last=now; if(!over) step(dt); draw(); requestAnimationFrame(frame); }
+touchStreak(); course(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
